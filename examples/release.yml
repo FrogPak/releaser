@@ -1,0 +1,28 @@
+# Copy to .github/workflows/release.yml in an app repository.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  release:
+    uses: FrogPak/releaser/.github/workflows/release.yml@v1
+    permissions:
+      contents: write
+      id-token: write
+    # Every input is optional; delete what you don't use.
+    with:
+      # Other files that state the version; each regex's group must match it.
+      version-files: |
+        Cargo.toml: ^version = "(.*)"
+      # Ponds to update at once after a release. Needs the POND_TOKEN secret.
+      ponds: |
+        OWNER/POND
+    secrets:
+      POND_TOKEN: ${{ secrets.POND_TOKEN }}

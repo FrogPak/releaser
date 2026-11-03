@@ -1,0 +1,256 @@
+# Builds a Flatpak app for each architecture and publishes GitHub releases that
+# FrogPak ponds pick up. Called from the app repository's own workflow; the
+# example in this repository's examples/ folder shows the call.
+#
+# Behavior by event:
+#   - Push to the default branch: when the newest <release> in the app's
+#     metainfo has no matching tag yet, the tag, the release and the bundles are
+#     created in this run. Otherwise only the checks run.
+#   - Push of a tag such as v1.2.0: releases that tag. For a final release, the
+#     tag must match the newest metainfo release.
+#   - Pull requests and other branches: checks only.
+#   - Manual run: builds and uploads the bundles as workflow artifacts, no release.
+#
+# Checks: exactly one Flatpak manifest (build-aux/, flatpak/, packaging/ or the
+# repository root, or the manifest input); metainfo releases listed newest
+# first; optional version-files agree with the version.
+#
+# Releases: bundles are named <app ID>-<arch>.flatpak, so
+# /releases/latest/download/<app ID>-<arch>.flatpak is a stable link. A version
+# containing a hyphen, or a metainfo release of type "development", is a
+# pre-release and does not trigger ponds. Release notes come from the metainfo
+# <release> description, or GitHub's generated notes when there is none.
+#
+# Caller requirements: permissions contents write and id-token write. The
+# optional POND_TOKEN secret (fine-grained token, Actions read and write on the
+# listed pond repositories) lets a release trigger those ponds at once; without
+# it, ponds pick the release up at their next scheduled check. The aarch64 runner
+# is free for public repositories only.
+
+name: FrogPak releaser
+
+on:
+  workflow_call:
+    inputs:
+      manifest:
+        description: Path of the Flatpak manifest, when automatic discovery finds none or several.
+        type: string
+        default: ""
+      metainfo:
+        description: Path of the metainfo file, when automatic discovery finds several.
+        type: string
+        default: ""
+      version-files:
+        description: 'Lines of "path: regex"; each regex''s first group must equal the version.'
+        type: string
+        default: ""
+      tag-prefix:
+        type: string
+        default: v
+      arches:
+        type: string
+        default: x86_64 aarch64
+      runners:
+        description: 'Lines of "arch: runner label" overriding the default runners.'
+        type: string
+        default: ""
+      ponds:
+        description: Pond repositories (owner/repo), one per line, to trigger after a release.
+        type: string
+        default: ""
+    secrets:
+      POND_TOKEN:
+        required: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      app-id: ${{ steps.plan.outputs.app-id }}
+      branch: ${{ steps.plan.outputs.branch }}
+      manifest: ${{ steps.plan.outputs.manifest }}
+      metainfo: ${{ steps.plan.outputs.metainfo }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      release: ${{ steps.plan.outputs.release }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      build: ${{ steps.plan.outputs.build }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      releaser-repository: ${{ steps.releaser.outputs.repository }}
+      releaser-sha: ${{ steps.releaser.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Locate releaser
+        # github.workflow_sha names the caller's commit in a called workflow; the
+        # OIDC token's job_workflow_sha is the only source for this file's commit.
+        # Pull requests from forks get no OIDC token, so their checks are skipped.
+        id: releaser
+        run: |
+          if [[ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]]; then
+            echo "::notice::No OIDC token (pull request from a fork?); checks skipped."
+            exit 0
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import base64, json, os, urllib.request
+          request = urllib.request.Request(
+              os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=frogpak",
+              headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
+          token = json.load(urllib.request.urlopen(request))["value"]
+          payload = token.split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          print("repository=" + claims["job_workflow_ref"].split("/.github/")[0])
+          print("sha=" + claims["job_workflow_sha"])
+          PY
+
+      - if: steps.releaser.outputs.sha
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.releaser.outputs.repository }}
+          ref: ${{ steps.releaser.outputs.sha }}
+          path: .frogpak-releaser
+
+      - name: Check versions and plan
+        if: steps.releaser.outputs.sha
+        id: plan
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          METAINFO: ${{ inputs.metainfo }}
+          VERSION_FILES: ${{ inputs.version-files }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          ARCHES: ${{ inputs.arches }}
+          RUNNERS: ${{ inputs.runners }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q python3-yaml; }
+          PYTHONPATH=.frogpak-releaser python3 -m releaser plan --event "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" \
+            --default-branch "$DEFAULT_BRANCH" --manifest "$MANIFEST" --metainfo "$METAINFO" \
+            --tag-prefix "$TAG_PREFIX" --arches "$ARCHES"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      APP_ID: ${{ needs.plan.outputs.app-id }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          # librsvg2-common gives build-export the SVG loader it needs to validate SVG icons.
+          sudo apt-get install -y flatpak flatpak-builder librsvg2-common
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          # Ubuntu 24.04 blocks the unprivileged user namespaces bwrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build
+        # Output and builder state stay outside the checkout: a manifest with a
+        # dir source copies the whole repository.
+        env:
+          MANIFEST: ${{ needs.plan.outputs.manifest }}
+        run: |
+          flatpak-builder --user --arch="$ARCH" --install-deps-from=flathub --disable-rofiles-fuse \
+            --force-clean --state-dir="$RUNNER_TEMP/fb-state" --repo="$RUNNER_TEMP/repo" \
+            "$RUNNER_TEMP/builddir" "$MANIFEST"
+
+      - name: Bundle
+        env:
+          BRANCH: ${{ needs.plan.outputs.branch }}
+        run: |
+          flatpak build-bundle --arch="$ARCH" --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            "$RUNNER_TEMP/repo" "$APP_ID-$ARCH.flatpak" "$APP_ID" "$BRANCH"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.APP_ID }}-${{ env.ARCH }}.flatpak
+          archive: false
+          if-no-files-found: error
+
+  release:
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: frogpak-release-${{ needs.plan.outputs.tag }}
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ needs.plan.outputs.releaser-repository }}
+          ref: ${{ needs.plan.outputs.releaser-sha }}
+          path: .frogpak-releaser
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/bundles
+          merge-multiple: true
+
+      - name: Release notes
+        env:
+          METAINFO: ${{ needs.plan.outputs.metainfo }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          PYTHONPATH=.frogpak-releaser python3 -m releaser notes --metainfo "$METAINFO" \
+            --version "$VERSION" --output "$RUNNER_TEMP/notes.md"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--title "$TAG")
+          [[ "$PRERELEASE" == true ]] && flags+=(--prerelease)
+          if [[ -s "$RUNNER_TEMP/notes.md" ]]; then
+            flags+=(--notes-file "$RUNNER_TEMP/notes.md")
+          else
+            flags+=(--generate-notes)
+          fi
+          # Two quick pushes can both plan the same new tag; the second must not attach
+          # its bundles to a tag on the first one's commit. The last line is the peeled
+          # commit of an annotated tag, or the commit of a lightweight one.
+          existing=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | sort -k2 | awk 'END { print $1 }')
+          if [[ -n "$existing" && "$existing" != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG already points at ${existing:0:7}, not this run's commit ${GITHUB_SHA:0:7}; bundles not attached."
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP"/bundles/*.flatpak --clobber
+            exit 0
+          fi
+          # Created as a draft with its bundles, then published: ponds polling in between
+          # would otherwise see a latest release with missing files.
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" "${flags[@]}" "$RUNNER_TEMP"/bundles/*.flatpak
+          gh release edit "$TAG" --draft=false
+
+      - name: Trigger ponds
+        if: needs.plan.outputs.prerelease != 'true' && inputs.ponds != ''
+        env:
+          GH_TOKEN: ${{ secrets.POND_TOKEN }}
+          PONDS: ${{ inputs.ponds }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::notice::POND_TOKEN is not set; ponds will pick this release up at their next check."
+            exit 0
+          fi
+          while read -r pond; do
+            [[ -z "$pond" || "$pond" == \#* ]] && continue
+            gh workflow run publish.yml --repo "$pond" \
+              || echo "::warning::Could not trigger $pond; it will pick this release up at its next check."
+          done <<< "$PONDS"
