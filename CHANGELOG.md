@@ -2,6 +2,7 @@
 
 ## 1.0.1
 
+- `__version__` in the code matches the release, from this version on.
 - The `ponds` input ignores blank lines and lines starting with `#`. The example workflow keeps its `ponds` lines active with a `# OWNER/REPOSITORY` placeholder, so adding a Pond means replacing one line rather than uncommenting several.
 - Documentation and workflow text capitalize Pond.
 
