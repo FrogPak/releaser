@@ -1,5 +1,5 @@
 # Builds a Flatpak app for each architecture and publishes GitHub releases that
-# FrogPak ponds pick up. Called from the app repository's own workflow; the
+# FrogPak Ponds pick up. Called from the app repository's own workflow; the
 # example in this repository's examples/ folder shows the call.
 #
 # Behavior by event:
@@ -18,13 +18,13 @@
 # Releases: bundles are named <app ID>-<arch>.flatpak, so
 # /releases/latest/download/<app ID>-<arch>.flatpak is a stable link. A version
 # containing a hyphen, or a metainfo release of type "development", is a
-# pre-release and does not trigger ponds. Release notes come from the metainfo
+# pre-release and does not trigger Ponds. Release notes come from the metainfo
 # <release> description, or GitHub's generated notes when there is none.
 #
 # Caller requirements: permissions contents write and id-token write. The
 # optional POND_TOKEN secret (fine-grained token, Actions read and write on the
-# listed pond repositories) lets a release trigger those ponds at once; without
-# it, ponds pick the release up at their next scheduled check. The aarch64 runner
+# listed Pond repositories) lets a release trigger those Ponds at once; without
+# it, Ponds pick the release up at their next scheduled check. The aarch64 runner
 # is free for public repositories only.
 
 name: FrogPak releaser
@@ -55,7 +55,7 @@ on:
         type: string
         default: ""
       ponds:
-        description: Pond repositories (owner/repo), one per line, to trigger after a release.
+        description: Pond repositories (owner/repo), one per line, to trigger after a release. Lines starting with # are ignored.
         type: string
         default: ""
     secrets:
@@ -234,23 +234,26 @@ jobs:
             gh release upload "$TAG" "$RUNNER_TEMP"/bundles/*.flatpak --clobber
             exit 0
           fi
-          # Created as a draft with its bundles, then published: ponds polling in between
+          # Created as a draft with its bundles, then published: Ponds polling in between
           # would otherwise see a latest release with missing files.
           gh release create "$TAG" --draft --target "$GITHUB_SHA" "${flags[@]}" "$RUNNER_TEMP"/bundles/*.flatpak
           gh release edit "$TAG" --draft=false
 
-      - name: Trigger ponds
+      - name: Trigger Ponds
         if: needs.plan.outputs.prerelease != 'true' && inputs.ponds != ''
         env:
           GH_TOKEN: ${{ secrets.POND_TOKEN }}
           PONDS: ${{ inputs.ponds }}
         run: |
+          # Blank lines and lines starting with # are skipped, so the example's placeholder
+          # line triggers nothing and needs no POND_TOKEN.
+          mapfile -t ponds < <(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "$PONDS" | grep -v -e '^#' -e '^$')
+          (( ${#ponds[@]} )) || exit 0
           if [[ -z "$GH_TOKEN" ]]; then
-            echo "::notice::POND_TOKEN is not set; ponds will pick this release up at their next check."
+            echo "::notice::POND_TOKEN is not set; Ponds will pick this release up at their next check."
             exit 0
           fi
-          while read -r pond; do
-            [[ -z "$pond" || "$pond" == \#* ]] && continue
+          for pond in "${ponds[@]}"; do
             gh workflow run publish.yml --repo "$pond" \
               || echo "::warning::Could not trigger $pond; it will pick this release up at its next check."
-          done <<< "$PONDS"
+          done

@@ -21,8 +21,10 @@ jobs:
       # Other files that state the version; each regex's group must match it.
       version-files: |
         Cargo.toml: ^version = "(.*)"
-      # Ponds to update at once after a release. Needs the POND_TOKEN secret.
+      # Ponds to update at once after a release, one owner/repository per line.
+      # Needs the POND_TOKEN secret. Lines starting with # are ignored, so replace
+      # the placeholder in place to keep the indentation.
       ponds: |
-        OWNER/POND
+        # OWNER/REPOSITORY
     secrets:
       POND_TOKEN: ${{ secrets.POND_TOKEN }}

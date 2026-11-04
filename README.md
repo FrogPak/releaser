@@ -1,8 +1,8 @@
 # FrogPak releaser
 
-Builds your app's Flatpak for x86_64 and aarch64 and publishes GitHub releases that [FrogPak](https://github.com/FrogPak/engine) ponds pick up. Bump the version in your metainfo, push, and the tag, release and bundles follow.
+Builds your app's Flatpak for x86_64 and aarch64 and publishes GitHub releases that [FrogPak](https://github.com/FrogPak/engine) Ponds pick up. Bump the version in your metainfo, push, and the tag, release and bundles follow.
 
-Optional: a pond only needs releases with `.flatpak` files it can match, however they were built.
+Optional: a Pond only needs releases with `.flatpak` files it can match, however they were built.
 
 ## Use it
 
@@ -24,13 +24,13 @@ What runs when:
 
 | Event | Result |
 | --- | --- |
-| Push to the default branch, new metainfo version | Checks, build, tag, release, ponds triggered |
+| Push to the default branch, new metainfo version | Checks, build, tag, release, Ponds triggered |
 | Push to the default branch, version already released | Checks |
-| Push of a `v*` tag | Checks, build, release, ponds triggered |
+| Push of a `v*` tag | Checks, build, release, Ponds triggered |
 | Pull request or other branch | Checks |
 | Manual run | Checks, build, bundles as workflow artifacts |
 
-Versions with a hyphen (`1.2.0-rc1`) and metainfo releases of type `development` become pre-releases, which ponds ignore.
+Versions with a hyphen (`1.2.0-rc1`) and metainfo releases of type `development` become pre-releases, which Ponds ignore.
 
 Bundles are named `<app ID>-<arch>.flatpak`, so `https://github.com/OWNER/REPO/releases/latest/download/<app ID>-x86_64.flatpak` always points at the newest release.
 
@@ -44,9 +44,9 @@ Bundles are named `<app ID>-<arch>.flatpak`, so `https://github.com/OWNER/REPO/r
 | `tag-prefix` | `v` | Prefix of release tags |
 | `arches` | `x86_64 aarch64` | Architectures to build |
 | `runners` | `ubuntu-latest`, `ubuntu-26.04-arm` | Lines of `arch: runner label` |
-| `ponds` | none | Pond repositories (`owner/repo`) to trigger after a release |
+| `ponds` | none | Pond repositories (`owner/repo`), one per line, to trigger after a release; lines starting with `#` are ignored |
 
-Secret `POND_TOKEN`: a fine-grained token with **Actions: Read and write** on the pond repositories. Without it, ponds pick releases up at their next hourly check.
+Secret `POND_TOKEN`: a fine-grained token with **Actions: Read and write** on the Pond repositories. Without it, Ponds pick releases up at their next hourly check.
 
 The aarch64 runner is free for public repositories only.
 
